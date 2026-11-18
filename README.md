@@ -189,4 +189,4 @@ docs/images/       simulator screenshots
 - The MP3 decoder's structure follows [minimp3](https://github.com/lieff/minimp3) (CC0).
 - Hardware details (register addresses, init sequences, timings) were worked out with the help of
   [Rockbox](https://www.rockbox.org/)'s source and [ipodpatcher](https://www.rockbox.org/wiki/IpodPatcher).
-- Everything else: MIT. See [LICENSE](LICENSE).
+- Everything else: GNU GPL, version 2 or (at your option) any later version. See [LICENSE](LICENSE).
