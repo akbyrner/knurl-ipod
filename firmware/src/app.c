@@ -1,7 +1,8 @@
 /*
  * The user interface: Knurl's screens on the iPod, driven by the click wheel, showing the
  * real library from /.knurl (Milestone 2), playing its MP3s (Milestone 3: src/player.c,
- * src/mp3) gaplessly through the audio ring.
+ * src/mp3) gaplessly through the audio ring. Milestone 6: every music view opens in Flow (Play/Pause
+ * switches it to its list), and Settings (playback, power, About) kept in /.knurl/settings.bin.
  *
  * 320x240 landscape: a header, a scrolling content area, and the mini player at the
  * bottom while something is playing. The physical click wheel replaces Knurl's on-screen one.
@@ -47,11 +48,15 @@
 #define NP_CARD_H 50
 
 /* ---- screens ---------------------------------------------------------------------- */
-enum { S_HOME, S_ALBUMS, S_ARTISTS, S_SONGS, S_ALBUM, S_ARTIST, S_RECENT, S_SOON, S_DIAG, S_NOW };
+enum { S_HOME, S_ALBUMS, S_ARTISTS, S_SONGS, S_ALBUM, S_ARTIST, S_RECENT, S_SOON, S_DIAG, S_NOW,
+       S_SETTINGS, S_ABOUT, S_KINDS };
 
 typedef struct {
     int kind, arg;                 /* arg: album / artist index, or milestone for S_SOON */
     int focus, scroll, target;
+    int list;                      /* a music view showing its list instead of Flow */
+    int fpos;                      /* Flow: where the carousel is, in 1/256 of an item (follows focus) */
+    int edit;                      /* Settings: the wheel is changing the focused setting */
     const char *title;             /* S_SOON */
 } screen_t;
 
@@ -70,10 +75,9 @@ static int depth;
 #define ROW_H       26
 typedef struct { const char *label; unsigned icon; int screen, milestone; } home_row;
 static const home_row home_rows[] = {
-    { "Flow", ICON_FLOW, S_SOON, 5 },          { "Albums", ICON_ALBUMS, S_ALBUMS, 0 },
-    { "Artists", ICON_ARTISTS, S_ARTISTS, 0 }, { "Songs", ICON_SONGS, S_SONGS, 0 },
-    { "Playlists", ICON_PLAYLISTS, S_SOON, 6 },{ "Shuffle Songs", ICON_SHUFFLE, -1, 0 },
-    { "Settings", ICON_SETTINGS, S_SOON, 6 },
+    { "Albums", ICON_ALBUMS, S_ALBUMS, 0 },    { "Artists", ICON_ARTISTS, S_ARTISTS, 0 },
+    { "Songs", ICON_SONGS, S_SONGS, 0 },       { "Playlists", ICON_PLAYLISTS, S_SOON, 7 },
+    { "Shuffle Songs", ICON_SHUFFLE, -1, 0 },  { "Settings", ICON_SETTINGS, S_SETTINGS, 0 },
 };
 #define HOME_ROWS ((int)(sizeof home_rows / sizeof home_rows[0]))
 #define GRID_COLS 4
@@ -100,8 +104,69 @@ static struct {
 #define SCRUB_REST_MS  300         /* seek once the wheel has rested this long */
 #define VOLUME_SHOW_MS 1500
 
-/* Step 0 is silent; 7 (the start) is -30 dB; 15 is +2 dB (the headphone amp goes to +6). */
+/* Step 0 is silent; 7 (the default start) is -30 dB; 15 is +2 dB (the headphone amp goes to +6). */
 static int volume_db(int step) { return step <= 0 ? -90 : -58 + 4 * step; }
+
+/* ---- settings: /.knurl/settings.bin (see platform.h) --------------------------------------- */
+#define N_OF(a) ((int)(sizeof a / sizeof a[0]))
+enum { REPEAT_OFF, REPEAT_ALL, REPEAT_ONE };
+static const uint32_t light_ms[] = { 10000, 20000, 30000, 60000, 120000, 0 };
+static const char *const light_txt[] = { "10 s", "20 s", "30 s", "1 min", "2 min", "Always on" };
+static const uint32_t idle_min[] = { 5, 15, 30, 60, 0 };
+static const char *const idle_txt[] = { "5 min", "15 min", "30 min", "1 hour", "Never" };
+static const char *const repeat_txt[] = { "Off", "All", "One" };
+
+static struct { int shuffle, repeat, volume, light, idle; } cfg = { 0, REPEAT_OFF, 7, 1, 1 };
+static int cfg_saved;                  /* settings.bin is on the iPod, so changes are kept */
+static uint32_t cfg_buf[128];          /* one sector, 4-aligned for the disk */
+
+static void apply_power(void) { platform_set_power(light_ms[cfg.light], idle_min[cfg.idle] * 60000u); }
+
+/* The record: "KSET", version 1, shuffle, repeat, starting volume, backlight, auto-off. Anything
+ * else (the zero-filled file PodManager creates) means the defaults. */
+static void settings_load(void)
+{
+    const uint8_t *b = (const uint8_t *)cfg_buf;
+    cfg_saved = platform_settings_load(cfg_buf) == 0;
+    if (!cfg_saved || b[0] != 'K' || b[1] != 'S' || b[2] != 'E' || b[3] != 'T' || b[4] != 1) return;
+    if (b[5] <= 1) cfg.shuffle = b[5];
+    if (b[6] <= REPEAT_ONE) cfg.repeat = b[6];
+    if (b[7] >= 1 && b[7] < VOLUME_STEPS) cfg.volume = b[7];
+    if (b[8] < N_OF(light_ms)) cfg.light = b[8];
+    if (b[9] < N_OF(idle_min)) cfg.idle = b[9];
+}
+
+static void settings_save(void)
+{
+    uint8_t *b = (uint8_t *)cfg_buf;
+    for (int i = 0; i < 512; i++) b[i] = 0;
+    b[0] = 'K'; b[1] = 'S'; b[2] = 'E'; b[3] = 'T'; b[4] = 1;
+    b[5] = (uint8_t)cfg.shuffle; b[6] = (uint8_t)cfg.repeat; b[7] = (uint8_t)cfg.volume;
+    b[8] = (uint8_t)cfg.light; b[9] = (uint8_t)cfg.idle;
+    if (cfg_saved && platform_settings_save(cfg_buf)) cfg_saved = 0;
+}
+
+/* The Settings screen's rows, in wheel order, under PLAYBACK, POWER and ABOUT. */
+enum { SET_SHUFFLE, SET_REPEAT, SET_VOLUME, SET_LIGHT, SET_IDLE, SET_ABOUT, SET_ROWS };
+static const char *const set_label[SET_ROWS] = { "Shuffle", "Repeat", "Starting volume", "Backlight", "Auto-off", "About Knurl" };
+
+/* The value behind row i and its range; NULL for About. */
+static int *set_field(int i, int *lo, int *hi)
+{
+    *lo = 0;
+    switch (i) {
+    case SET_SHUFFLE: *hi = 1; return &cfg.shuffle;
+    case SET_REPEAT:  *hi = REPEAT_ONE; return &cfg.repeat;
+    case SET_VOLUME:  *lo = 1; *hi = VOLUME_STEPS - 1; return &cfg.volume;
+    case SET_LIGHT:   *hi = N_OF(light_ms) - 1; return &cfg.light;
+    case SET_IDLE:    *hi = N_OF(idle_min) - 1; return &cfg.idle;
+    }
+    *hi = 0;
+    return 0;
+}
+
+/* Rows with several values are picked with the wheel; Shuffle and Repeat step on Select. */
+static int set_wheel_edits(int i) { return i == SET_VOLUME || i == SET_LIGHT || i == SET_IDLE; }
 
 static uint16_t *plane;            /* the composed background */
 static int plane_album = -2;
@@ -198,9 +263,21 @@ static int item_count(const screen_t *s)
     case S_ALBUM: return lib.albums[s->arg].n_tracks;
     case S_ARTIST: return lib.artists[s->arg].n_albums;
     case S_RECENT: return lib.n_albums < 50 ? (int)lib.n_albums : 50;
+    case S_SETTINGS: return SET_ROWS;
     default: return 0;
     }
 }
+
+/* Every music view opens in Flow; Play/Pause switches it to its list (or grid) and back. The
+ * choice is remembered per view until the iPod restarts. */
+static int list_pref[S_KINDS];
+static int flowable(int kind) { return kind == S_ALBUMS || kind == S_ARTISTS || kind == S_SONGS || kind == S_ARTIST || kind == S_RECENT; }
+static int is_flow(const screen_t *s) { return flowable(s->kind) && !s->list && item_count(s) > 0; }
+
+/* Settings rows: three sections, each under a label. */
+#define SET_Y0  18
+#define SET_GAP 26
+static int set_y(int i) { return SET_Y0 + i * ROW_PITCH + (i < SET_LIGHT ? 0 : i < SET_ABOUT ? 1 : 2) * SET_GAP; }
 
 /* Item i's top and height, in content coordinates. */
 static void item_box(const screen_t *s, int i, int *y, int *h)
@@ -208,6 +285,9 @@ static void item_box(const screen_t *s, int i, int *y, int *h)
     if (s->kind == S_HOME) {
         if (i < TILE_N) { *y = TILE_Y; *h = TILE_S; }
         else { *y = ROW_Y0 + (i - TILE_N) * ROW_PITCH; *h = ROW_H; }
+    } else if (s->kind == S_SETTINGS) {
+        *y = set_y(i);
+        *h = ROW_H;
     } else if (s->kind == S_ALBUMS) {
         *y = 6 + (i / GRID_COLS) * GRID_PITCH;
         *h = GRID_PITCH - 6;
@@ -471,9 +551,34 @@ static void draw_track_row(int track, int y, int h, int sel)
     gfx_text(&font_mono, 298 - tw, y + 7, tm, accent, 0, 0);
 }
 
+/* A setting: its name, and its value on the right. While the wheel is changing it the row gets
+ * an orange edge (like scrubbing on Now Playing) and the value turns orange. */
+static void draw_setting_row(const screen_t *s, int i, int y, int h, int sel)
+{
+    int editing = sel && s->edit, ink = sel && !editing;
+    if (editing) gfx_rrect(10, y, 300, h, 9, C_WHITE, A_GLASS, C_ORANGE, ALPHA_PCT(70));
+    else glass_row(y, h, sel);
+    gfx_text(&font_row, 22, y + (h - font_row.line) / 2, set_label[i], ink ? C_INK : C_WHITE, 170, 0);
+    if (i == SET_ABOUT) {
+        gfx_glyph(&font_icons, ICON_CHEVRON, 294, y + 7, ink ? C_INK : C_SECONDARY);
+        return;
+    }
+    char v[24];
+    switch (i) {
+    case SET_SHUFFLE: put_str(v, cfg.shuffle ? "On" : "Off"); break;
+    case SET_REPEAT: put_str(v, repeat_txt[cfg.repeat]); break;
+    case SET_VOLUME: { char *p = put_uint(v, (uint32_t)cfg.volume); p = put_str(p, " / "); put_uint(p, VOLUME_STEPS - 1); break; }
+    case SET_LIGHT: put_str(v, light_txt[cfg.light]); break;
+    default: put_str(v, idle_txt[cfg.idle]); break;
+    }
+    int vw = gfx_text_width(&font_body, v, 0);
+    gfx_text(&font_body, 296 - vw, y + (h - font_body.line) / 2, v, editing ? C_ORANGE : ink ? C_INK2 : C_SECONDARY, 0, 0);
+}
+
 static void draw_item(const screen_t *s, int i, int y, int h, int sel)
 {
     switch (s->kind) {
+    case S_SETTINGS: draw_setting_row(s, i, y, h, sel); break;
     case S_HOME: draw_home_item(i, y, sel); break;
     case S_ALBUMS: draw_grid_item(i, y, sel); break;
     case S_SONGS: draw_song_row(lib.songs_by_title[i], y, h, sel); break;
@@ -493,10 +598,14 @@ static void draw_items(const screen_t *s)
     if (s->kind == S_HOME) {
         mono_label(14, oy + 2, "PINNED", C_LABEL);
         mono_label(14, oy + LIB_LABEL_Y, "LIBRARY", C_LABEL);
+    } else if (s->kind == S_SETTINGS) {
+        mono_label(14, oy + set_y(SET_SHUFFLE) - 14, "PLAYBACK", C_LABEL);
+        mono_label(14, oy + set_y(SET_LIGHT) - 14, "POWER", C_LABEL);
+        mono_label(14, oy + set_y(SET_ABOUT) - 14, "ABOUT", C_LABEL);
     }
     /* only the items in view (lists can be thousands long) */
     int first = 0;
-    if (s->kind != S_HOME) {
+    if (s->kind != S_HOME && s->kind != S_SETTINGS) {
         int per = s->kind == S_ALBUMS ? GRID_PITCH : list_pitch(s->kind);
         first = (s->scroll / per) * (s->kind == S_ALBUMS ? GRID_COLS : 1);
         first -= s->kind == S_ALBUMS ? GRID_COLS : 1;
@@ -683,13 +792,260 @@ static void draw_diag(void)
     gfx_text(&font_body, 24, y + 18, "to put your library on this iPod.", C_SECONDARY, 270, 0);
 }
 
+/* ---- Flow (Knurl's AlbumFlow.kt) ------------------------------------------------------------
+ * The focused cover face-on in the middle; the others turned 62 degrees away and stacked to each
+ * side, the first neighbour well clear of the middle, with reflections. Under it the title, and a
+ * dial of ticks that slides past a fixed orange marker as the wheel turns. */
+#define FLOW_SIDE 4                       /* covers drawn on each side */
+#define FLOW_TOP  28
+/* cos and sin of 0..62 degrees in 16 steps, Q14 */
+static const uint16_t tilt_cos[17] = { 16384, 16347, 16234, 16048, 15788, 15456, 15053, 14582, 14044,
+                                       13441, 12778, 12055, 11278, 10449, 9572, 8652, 7692 };
+static const uint16_t tilt_sin[17] = { 0, 1107, 2209, 3301, 4378, 5435, 6467, 7470, 8438,
+                                       9368, 10255, 11095, 11885, 12620, 13297, 13913, 14466 };
+
+/* The album whose cover stands for item i (-1: none). */
+static int flow_album(const screen_t *s, int i)
+{
+    switch (s->kind) {
+    case S_ALBUMS: return lib.albums_by_title[i];
+    case S_RECENT: return lib.albums_by_added[i];
+    case S_ARTIST: return (int)lib.artists[s->arg].first_album + i;
+    case S_ARTISTS: return lib.artists[i].n_albums ? (int)lib.artists[i].first_album : -1;
+    case S_SONGS: return lib.tracks[lib.songs_by_title[i]].album;
+    }
+    return -1;
+}
+
+/* Item i's two lines under the carousel. */
+static const char *flow_text(const screen_t *s, int i, char *sub)
+{
+    char *p = sub;
+    switch (s->kind) {
+    case S_ARTISTS: {
+        const kidx_artist *a = &lib.artists[i];
+        p = put_uint(p, a->n_albums);
+        p = put_str(p, a->n_albums == 1 ? " album \xC2\xB7 " : " albums \xC2\xB7 ");
+        p = put_uint(p, a->n_tracks);
+        put_str(p, a->n_tracks == 1 ? " song" : " songs");
+        return lib_str(a->name);
+    }
+    case S_SONGS: {
+        const kidx_track *t = &lib.tracks[lib.songs_by_title[i]];
+        *p = 0;
+        return lib_str(t->title);              /* the artist: drawn from the track (see draw_flow) */
+    }
+    default: {
+        const kidx_album *a = &lib.albums[flow_album(s, i)];
+        if (s->kind == S_ARTIST) {             /* the artist is in the header already */
+            if (a->year) { p = put_uint(p, a->year); p = put_str(p, " \xC2\xB7 "); }
+            p = put_uint(p, a->n_tracks);
+            put_str(p, a->n_tracks == 1 ? " song" : " songs");
+        } else *p = 0;
+        return lib_str(a->title);
+    }
+    }
+}
+
+/* One cover, off (1/256 items) from the middle. */
+static void flow_cover(const screen_t *s, int i, int off, int size, int cy, int fast)
+{
+    int a = off < 0 ? -off : off, a1 = a > 256 ? 256 : a;            /* |off|, and min(|off|, 1) */
+    int xc = SCREEN_W / 2 + (off < 0 ? -1 : 1) * ((a1 * size * 82 / 100 + (a - a1) * size * 17 / 100) >> 8);
+    int w = (size * (256 - a1 * 12 / 100)) >> 8;                      /* sides are 12% smaller */
+    int q = a1 * 16, k = q >> 8, f = q & 255, k1 = k < 16 ? k + 1 : 16;
+    int cs = tilt_cos[k] + (((tilt_cos[k1] - tilt_cos[k]) * f) >> 8);
+    int sn = tilt_sin[k] + (((tilt_sin[k1] - tilt_sin[k]) * f) >> 8);
+    int hw = w / 2, ex = (hw * cs) >> 14, ez = (hw * sn) >> 14, dist = size * 5 / 2;
+    int near = (dist << 8) / (dist - ez), far = (dist << 8) / (dist + ez);   /* Q8 perspective */
+    int x_in = (ex * near) >> 8, x_out = (ex * far) >> 8, h_in = (w * near) >> 8, h_out = (w * far) >> 8;
+    int xl, xr, hl, hr;                   /* the edge towards the middle comes forward */
+    if (off >= 0) { xl = xc - x_in; hl = h_in; xr = xc + x_out; hr = h_out; }
+    else { xl = xc - x_out; hl = h_out; xr = xc + x_in; hr = h_in; }
+    if (!a) { xl = xc - hw; xr = xl + w; hl = hr = w; }
+
+    int album = flow_album(s, i), src = KART_COVER_S;
+    const uint16_t *px = 0;
+    color_t c0 = RGB(0x34343A), c1 = RGB(0x222226);
+    if (album >= 0) {
+        c0 = RGB(lib.albums[album].color0);
+        c1 = RGB(lib.albums[album].color1);
+        px = lib_art_cached(album, KART_COVER);
+        if (!px && fast) { px = lib_art(album, KART_GRID); src = KART_GRID_S; }   /* moving fast: no big reads */
+        else if (!px) px = lib_art(album, KART_COVER);
+    }
+    int shade = (a1 * 9 >> 8) + (a > 256 ? ((a - 256) * 3 >> 8) : 0);
+    if (shade > 18) shade = 18;
+    gfx_cover(px, src, c0, c1, xl, xr, cy, hl, hr, shade, 8, 72, ALPHA_PCT(44));
+    if (a) return;
+    if (!px && album >= 0) album_art(album, KART_COVER, xl, cy - w / 2, w, 8);    /* its initial */
+    else gfx_rrect(xl, cy - w / 2, w, w, 8, 0, 0, C_WHITE, A_BORDER);
+}
+
+/* Where you are: ticks 7 px apart sliding past the orange marker, fading out at the ends. */
+static void flow_dial(int y, int n, int pos)
+{
+    const int mid = SCREEN_W / 2, half = 136, solid = 88, gap = 7;
+    int k0 = (pos >> 8) - half / gap - 1, k1 = (pos >> 8) + half / gap + 2;
+    if (k0 < 0) k0 = 0;
+    if (k1 > n - 1) k1 = n - 1;
+    for (int k = k0; k <= k1 && n > 1; k++) {
+        int x = mid + ((((k << 8) - pos) * gap) >> 8), d = x < mid ? mid - x : x - mid;
+        if (d > half) continue;
+        int alpha = ALPHA_PCT(28);
+        if (d > solid) alpha = alpha * (half - d) / (half - solid);
+        gfx_fill(x, y + 2, 1, 12, C_WHITE, alpha);
+    }
+    gfx_rrect(mid - 4, y - 2, 9, 20, 4, C_ORANGE, ALPHA_PCT(18), 0, 0);
+    gfx_rrect(mid - 1, y, 3, 16, 1, C_ORANGE, 32, 0, 0);
+}
+
+static void draw_flow(const screen_t *s)
+{
+    int n = item_count(s), pos = s->fpos, cur = (pos + 128) >> 8;
+    if (cur < 0) cur = 0;
+    if (cur > n - 1) cur = n - 1;
+
+    /* header: the view on the left, where you are on the right */
+    char label[64], count[24], *p;
+    switch (s->kind) {
+    case S_ALBUMS: put_str(label, "ALBUMS"); break;
+    case S_ARTISTS: put_str(label, "ARTISTS"); break;
+    case S_SONGS: put_str(label, "SONGS"); break;
+    case S_RECENT: put_str(label, "RECENTLY ADDED"); break;
+    default: upper_ascii(label, lib_str(lib.artists[s->arg].name), sizeof label); break;
+    }
+    p = put_uint(count, (uint32_t)cur + 1);
+    p = put_str(p, " / ");
+    put_uint(p, (uint32_t)n);
+    int cw = gfx_text_width(&font_mono, count, 2);
+    gfx_text(&font_mono, 14, 9, label, C_LABEL, 268 - cw - 24, 2);
+    mono_label(268 - cw, 9, count, C_TERTIARY);
+    battery(282, 8);
+
+    /* layout, from the bottom up: dial, second line, title, then the covers in what's left */
+    int bottom = content_bottom(), dial_y = bottom - 18;
+    int sub_y = dial_y - 4 - font_body.line, title_y = sub_y - font_row.line;
+    int size = (title_y - 4 - FLOW_TOP) * 100 / 128;                 /* the cover plus 28% reflection */
+    if (size > KART_COVER_S) size = KART_COVER_S;
+    int cy = FLOW_TOP + size / 2, d = s->focus * 256 - pos;
+    int fast = d > 512 || d < -512;
+
+    /* far to near, so the middle cover lands on top */
+    int order[2 * FLOW_SIDE + 3], m = 0;
+    int i0 = (pos >> 8) - FLOW_SIDE, i1 = ((pos + 255) >> 8) + FLOW_SIDE;
+    if (i0 < 0) i0 = 0;
+    if (i1 > n - 1) i1 = n - 1;
+    for (int i = i0; i <= i1 && m < N_OF(order); i++) {
+        int j = m++, ai = i * 256 - pos < 0 ? pos - i * 256 : i * 256 - pos;
+        while (j > 0) {
+            int b = order[j - 1], ab = b * 256 - pos < 0 ? pos - b * 256 : b * 256 - pos;
+            if (ab >= ai) break;
+            order[j] = b;
+            j--;
+        }
+        order[j] = i;
+    }
+    gfx_clip(0, 22, SCREEN_W, bottom - 22);
+    for (int j = 0; j < m; j++) flow_cover(s, order[j], order[j] * 256 - pos, size, cy, fast);
+
+    char sub[96];
+    const char *title = flow_text(s, cur, sub);
+    const char *line2 = s->kind == S_SONGS ? lib_str(lib.tracks[lib.songs_by_title[cur]].artist)
+                      : s->kind == S_ALBUMS || s->kind == S_RECENT ? lib_str(lib.albums[flow_album(s, cur)].artist_name) : sub;
+    int tw = gfx_text_width(&font_row, title, 0), sw = gfx_text_width(&font_body, line2, 0);
+    if (tw > 290) tw = 290;
+    if (sw > 290) sw = 290;
+    gfx_text(&font_row, (SCREEN_W - tw) / 2, title_y, title, C_WHITE, 290, 0);
+    gfx_text(&font_body, (SCREEN_W - sw) / 2, sub_y, line2, C_SECONDARY, 290, 0);
+    flow_dial(dial_y, n, pos);
+    gfx_noclip();
+}
+
+/* ---- About -------------------------------------------------------------------------------- */
+#define KNURL_MILESTONE 6
+
+static char *put_count(char *p, uint32_t v)            /* 2,420 */
+{
+    if (v >= 1000) { p = put_count(p, v / 1000); *p++ = ','; v %= 1000; *p++ = (char)('0' + v / 100); *p++ = (char)('0' + v / 10 % 10); *p++ = (char)('0' + v % 10); *p = 0; return p; }
+    return put_uint(p, v);
+}
+
+static char *put_2(char *p, uint32_t v) { *p++ = (char)('0' + v / 10 % 10); *p++ = (char)('0' + v % 10); *p = 0; return p; }
+
+/* 2026-11-18 (UTC), from Unix time: days to a civil date (H. Hinnant's algorithm). */
+static char *put_date(char *p, uint32_t unix_s)
+{
+    uint32_t z = unix_s / 86400 + 719468, era = z / 146097, doe = z - era * 146097;
+    uint32_t yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    uint32_t doy = doe - (365 * yoe + yoe / 4 - yoe / 100), mp = (5 * doy + 2) / 153;
+    uint32_t d = doy - (153 * mp + 2) / 5 + 1, m = mp < 10 ? mp + 3 : mp - 9, y = yoe + era * 400 + (m <= 2);
+    p = put_uint(p, y);
+    *p++ = '-';
+    p = put_2(p, m);
+    *p++ = '-';
+    return put_2(p, d);
+}
+
+static void draw_about(void)
+{
+    char label[40], line[96], *p;
+    p = put_str(label, "FIRMWARE \xC2\xB7 MILESTONE ");
+    put_uint(p, KNURL_MILESTONE);
+    header("About Knurl", label);
+    gfx_rrect(10, 48, 300, 140, 14, C_WHITE, A_GLASS, C_WHITE, A_BORDER);
+    int y = 60;
+    mono_label(24, y + 1, "LIBRARY", C_LABEL);
+    p = put_count(line, lib.n_tracks);
+    put_str(p, lib.n_tracks == 1 ? " song" : " songs");
+    gfx_text(&font_body, 104, y, line, C_WHITE, 196, 0);
+    y += 19;
+    p = put_count(line, lib.n_albums);
+    p = put_str(p, lib.n_albums == 1 ? " album, " : " albums, ");
+    p = put_count(p, lib.n_artists);
+    put_str(p, lib.n_artists == 1 ? " artist" : " artists");
+    gfx_text(&font_body, 104, y, line, C_SECONDARY, 196, 0);
+    y += 21;
+    mono_label(24, y + 1, "INDEXED", C_LABEL);
+    if (lib.built_unix) put_date(line, lib.built_unix); else put_str(line, "Unknown");
+    gfx_text(&font_body, 104, y, line, C_WHITE, 196, 0);
+    y += 21;
+    mono_label(24, y + 1, "DISK", C_LABEL);
+    p = put_str(line, platform_disk_name());
+    uint64_t sectors = platform_disk_sectors();
+    if (sectors) { p = put_str(p, ", "); p = put_uint(p, (uint32_t)(sectors / 2000000u)); put_str(p, " GB"); }
+    gfx_text(&font_body, 104, y, line, C_WHITE, 196, 0);
+    y += 21;
+    mono_label(24, y + 1, "BATTERY", C_LABEL);
+    int level = platform_battery(), mv = platform_battery_mv();
+    p = line;
+    *p = 0;
+    if (level >= 0) { p = put_uint(p, (uint32_t)level); p = put_str(p, "%"); }
+    if (mv > 0) { p = put_str(p, level >= 0 ? " \xC2\xB7 " : ""); p = put_uint(p, (uint32_t)mv / 1000); *p++ = '.'; p = put_2(p, (uint32_t)mv % 1000 / 10); p = put_str(p, " V"); }
+    if (platform_charging()) put_str(p, " \xC2\xB7 charging");
+    gfx_text(&font_body, 104, y, line[0] ? line : "Unknown", C_WHITE, 196, 0);
+    y += 21;
+    mono_label(24, y + 1, "SETTINGS", C_LABEL);
+    gfx_text(&font_body, 104, y, cfg_saved ? "Kept on this iPod" : "Not kept: sync with PodManager", C_WHITE, 196, 0);
+}
+
 static void draw(void)
 {
     screen_t *s = CUR;
     gfx_noclip();
     gfx_image(plane);
     char label[40];
+    if (is_flow(s)) {
+        draw_flow(s);
+        mini_player();
+        return;
+    }
     switch (s->kind) {
+    case S_SETTINGS:
+        header("Settings", s->edit ? "TURN TO CHANGE \xC2\xB7 SELECT WHEN DONE"
+                         : cfg_saved ? "KEPT ON THIS IPOD" : "NOT KEPT \xC2\xB7 SYNC WITH PODMANAGER");
+        break;
+    case S_ABOUT: draw_about(); break;
     case S_HOME:
         mono_label(14, 9, "HELLO", C_LABEL);
         battery(282, 8);
@@ -713,7 +1069,7 @@ static void draw(void)
     case S_DIAG: draw_diag(); break;
     case S_NOW: draw_now(); break;
     }
-    if (s->kind != S_SOON && s->kind != S_DIAG && s->kind != S_NOW) draw_items(s);
+    if (s->kind != S_SOON && s->kind != S_DIAG && s->kind != S_NOW && s->kind != S_ABOUT) draw_items(s);
     mini_player();
 }
 
@@ -724,7 +1080,15 @@ static void push(int kind, int arg, const char *title)
     screen_t *s = &stack[depth++];
     s->kind = kind; s->arg = arg; s->title = title;
     s->focus = 0; s->scroll = 0; s->target = 0;
+    s->list = list_pref[kind]; s->fpos = 0; s->edit = 0;
     dirty_all();
+}
+
+/* What changes when the focus moves: the list area, or in Flow everything above the mini player. */
+static void dirty_content(const screen_t *s)
+{
+    if (is_flow(s)) dirty(0, 0, SCREEN_W, content_bottom());
+    else dirty(0, content_top(s->kind), SCREEN_W, content_bottom() - content_top(s->kind));
 }
 
 /*
@@ -754,6 +1118,15 @@ static uint32_t heard_start;
 static struct { uint32_t frame, start_ms; int q; } sw[8];
 static int sw_n;
 
+/* The queue entry after q: q again (Repeat One, when q played to its end), the next one, the
+ * first (Repeat All, after the last), or -1: the end. */
+static int queue_after(int q, int ended)
+{
+    if (ended && cfg.repeat == REPEAT_ONE) return q;
+    if (++q < np.qlen) return q;
+    return cfg.repeat == REPEAT_ALL ? 0 : -1;
+}
+
 /* Keep the FIFO topped up. At most 128 KB per call (a few ms of disk) so the UI stays quick. */
 static void feed(void)
 {
@@ -761,8 +1134,12 @@ static void feed(void)
     while (feed_q >= 0 && budget > 0) {
         if (!feed_open) {
             if (!engine_marks_free()) return;
-            while (feed_q < np.qlen && fat_open(lib_str(lib.tracks[np.queue[feed_q]].path), &feed_file)) feed_q++;
-            if (feed_q >= np.qlen) { engine_end(); feed_q = -1; break; }
+            int tries = 0;                       /* skip files that won't open, once round the queue */
+            while (fat_open(lib_str(lib.tracks[np.queue[feed_q]].path), &feed_file)) {
+                feed_q = ++tries < np.qlen ? queue_after(feed_q, 0) : -1;
+                if (feed_q < 0) break;
+            }
+            if (feed_q < 0) { engine_end(); break; }
             if (feed_seek_ms) {
                 int hold;
                 uint32_t at = seek_offset(&feed_file, feed_seek_ms, &hold);
@@ -784,7 +1161,8 @@ static void feed(void)
         if (n > 0) { engine_wrote(n); budget -= n; }
         if (n < room) {                                  /* end of this file: on to the next */
             feed_open = 0;
-            if (++feed_q >= np.qlen) { engine_end(); feed_q = -1; }
+            feed_q = queue_after(feed_q, 1);
+            if (feed_q < 0) engine_end();
         }
     }
 }
@@ -871,12 +1249,26 @@ static void follow_playback(void)
     if (np.playing && engine_finished()) { np.playing = 0; dirty_all(); }
 }
 
+/* Shuffle queue entries from..qlen-1 in place. */
+static void shuffle_queue(int from)
+{
+    for (int i = np.qlen - 1; i > from; i--) {
+        int j = from + (int)(rnd() % (uint32_t)(i - from + 1));
+        uint16_t t = np.queue[i]; np.queue[i] = np.queue[j]; np.queue[j] = t;
+    }
+}
+
 /* Play `count` tracks taken from `src` (or tracks first..first+count-1 if src is NULL), from `start`. */
 static void play_list(const uint16_t *src, int first, int count, int start)
 {
     if (count <= 0) return;
     for (int i = 0; i < count; i++) np.queue[i] = src ? src[first + i] : (uint16_t)(first + i);
     np.qlen = count;
+    if (cfg.shuffle) {                     /* Shuffle on: the chosen song first, the rest in any order */
+        uint16_t t = np.queue[0]; np.queue[0] = np.queue[start]; np.queue[start] = t;
+        shuffle_queue(1);
+        start = 0;
+    }
     start_track(start);
 }
 
@@ -885,8 +1277,8 @@ static void shuffle_all(void)
     if (!lib.loaded || !lib.n_tracks) return;
     int n = (int)lib.n_tracks;
     for (int i = 0; i < n; i++) np.queue[i] = (uint16_t)i;
-    for (int i = n - 1; i > 0; i--) { int j = (int)(rnd() % (uint32_t)(i + 1)); uint16_t t = np.queue[i]; np.queue[i] = np.queue[j]; np.queue[j] = t; }
     np.qlen = n;
+    shuffle_queue(0);
     start_track(0);
     if (CUR->kind != S_NOW) push(S_NOW, 0, 0);
 }
@@ -895,8 +1287,11 @@ static void step_track(int d)
 {
     if (np.track < 0) return;
     int q = np.qpos + d;
-    if (q < 0) q = 0;
-    if (q >= np.qlen) { stop_playback(); return; }
+    if (q < 0) q = cfg.repeat == REPEAT_ALL ? np.qlen - 1 : 0;
+    if (q >= np.qlen) {
+        if (cfg.repeat != REPEAT_ALL) { stop_playback(); return; }
+        q = 0;
+    }
     start_track(q);
 }
 
@@ -906,7 +1301,7 @@ static void select_item(screen_t *s)
     switch (s->kind) {
     case S_HOME:
         if (i < TILE_N) {
-            if (i == 0) push(S_SOON, 6, "Liked Songs");
+            if (i == 0) push(S_SOON, 7, "Liked Songs");
             else if (i == 3 || !lib.n_albums) shuffle_all();
             else if (i == 1) push(S_ALBUM, np.track >= 0 ? lib.tracks[np.track].album : lib.albums_by_added[0], 0);
             else push(S_RECENT, 0, 0);
@@ -924,13 +1319,29 @@ static void select_item(screen_t *s)
     case S_ARTIST: push(S_ALBUM, (int)lib.artists[s->arg].first_album + i, 0); break;
     case S_ALBUM: { const kidx_album *a = &lib.albums[s->arg]; play_list(0, (int)a->first_track, a->n_tracks, i); push(S_NOW, 0, 0); break; }
     case S_SONGS: play_list(lib.songs_by_title, 0, (int)lib.n_tracks, i); push(S_NOW, 0, 0); break;
+    case S_SETTINGS:
+        if (i == SET_ABOUT) push(S_ABOUT, 0, 0);
+        else if (set_wheel_edits(i)) { s->edit = 1; dirty_all(); }
+        else {
+            int lo, hi, *v = set_field(i, &lo, &hi);
+            *v = *v >= hi ? lo : *v + 1;
+            settings_save();
+            dirty_all();
+        }
+        break;
     }
 }
 
 static void handle(const input_t *in)
 {
     screen_t *s = CUR;
-    if (in->pressed & BTN_PLAY) {
+    if ((in->pressed & BTN_PLAY) && flowable(s->kind) && item_count(s) > 0) {
+        s->list = !s->list;                     /* music views: Play/Pause switches Flow <-> list */
+        list_pref[s->kind] = s->list;
+        if (s->list) { aim_scroll(s); s->scroll = s->target; }
+        else s->fpos = s->focus * 256;
+        dirty_all();
+    } else if (in->pressed & BTN_PLAY) {
         if (np.track >= 0) {
             if (!np.playing && engine_finished()) start_track(np.qpos);   /* finished: play again */
             else { np.playing = !np.playing; audio_pause(!np.playing); }
@@ -974,6 +1385,21 @@ static void handle(const input_t *in)
         }
         return;
     }
+    if (s->kind == S_SETTINGS && s->edit) {        /* the wheel changes the setting */
+        int lo, hi, *v = set_field(s->focus, &lo, &hi);
+        if (in->wheel && v) {
+            int nv = *v + in->wheel;
+            if (nv < lo) nv = lo;
+            if (nv > hi) nv = hi;
+            if (nv != *v) {
+                *v = nv;
+                if (s->focus == SET_LIGHT || s->focus == SET_IDLE) apply_power();
+                dirty_content(s);
+            }
+        }
+        if (in->pressed & (BTN_SELECT | BTN_MENU)) { s->edit = 0; settings_save(); dirty_all(); }
+        return;
+    }
     if ((in->pressed & BTN_MENU) && depth > 1) { depth--; dirty_all(); aim_scroll(CUR); return; }
 
     int n = item_count(s);
@@ -983,8 +1409,8 @@ static void handle(const input_t *in)
         if (f > n - 1) f = n - 1;
         if (f != s->focus) {
             s->focus = f;
-            aim_scroll(s);
-            dirty(0, content_top(s->kind), SCREEN_W, content_bottom() - content_top(s->kind));
+            if (!is_flow(s)) aim_scroll(s);
+            dirty_content(s);
         }
     }
     if ((in->pressed & BTN_SELECT) && n) select_item(s);
@@ -993,14 +1419,25 @@ static void handle(const input_t *in)
 static int animate(void)
 {
     screen_t *s = CUR;
+    if (is_flow(s)) {                              /* the carousel eases towards the focus */
+        int d = s->focus * 256 - s->fpos;
+        if (!d) return 0;
+        int step = d / 4;
+        if (step > -24 && step < 24) step = d > 0 ? (d < 24 ? d : 24) : (d > -24 ? d : -24);
+        s->fpos += step;
+        dirty_content(s);
+        return s->fpos != s->focus * 256;
+    }
     int d = s->target - s->scroll;
     if (!d) return 0;
     int step = d / 3;
     if (!step) step = d > 0 ? 1 : -1;
     s->scroll += step;
-    dirty(0, content_top(s->kind), SCREEN_W, content_bottom() - content_top(s->kind));
+    dirty_content(s);
     return s->scroll != s->target;
 }
+
+static int animating(const screen_t *s) { return is_flow(s) ? s->fpos != s->focus * 256 : s->scroll != s->target; }
 
 void app_init(uint32_t now)
 {
@@ -1014,10 +1451,15 @@ void app_init(uint32_t now)
         library_load();
     }
     boot_log(lib.loaded ? "library: loaded" : lib.status);
+    settings_load();
+    boot_log(cfg_saved ? "settings: loaded" : "settings: no settings.bin (sync with PodManager)");
+    np.volume = cfg.volume;
+    audio_set_volume(volume_db(np.volume));
+    apply_power();
     np.queue = lib.loaded ? mem_alloc(sizeof(uint16_t) * (lib.n_tracks ? lib.n_tracks : 1)) : 0;
     depth = 0;
     push(lib.loaded ? S_HOME : S_DIAG, 0, 0);
-    CUR->focus = TILE_N + 1;               /* Albums */
+    CUR->focus = TILE_N;                   /* Albums */
     if (!lib.loaded) CUR->focus = 0;
     aim_scroll(CUR);
     CUR->scroll = CUR->target;
@@ -1043,7 +1485,7 @@ int app_step(const input_t *in, uint32_t now)
     int moving = 0;
     while (now - anim_ms >= 16) { anim_ms += 16; moving = animate(); }
     if (!moving) anim_ms = now;
-    moving = CUR->scroll != CUR->target;
+    moving = animating(CUR);
 
     if (np.scrub_pending && now - np.scrub_at >= SCRUB_REST_MS) {
         np.scrub_pending = 0;

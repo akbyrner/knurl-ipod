@@ -275,3 +275,54 @@ int gfx_text(const font_t *f, int x, int y, const char *s, color_t c, int maxw, 
     }
     return pen > x ? pen - x - track : 0;
 }
+
+/* ---- Flow covers ------------------------------------------------------------------------
+ * Column by column: each screen column is one source column, stretched to that column's
+ * height. 1/z is linear across the screen, so the source column is t*hr / h (perspective-correct),
+ * and the height itself runs straight from hl to hr. Nearest-neighbour sampling throughout:
+ * the covers are moving whenever they aren't face-on, and face-on they are close to their size. */
+void gfx_cover(const uint16_t *px, int s, color_t c0, color_t c1, int xl, int xr, int cy, int hl, int hr,
+               int shade, int r, int refl, int refl_a)
+{
+    int w = xr - xl;
+    if (w <= 0 || hl <= 0 || hr <= 0 || s <= 0) return;
+    if (!corners_ready) build_corners();
+    r = hl == hr ? fit_radius(r, w, hl) : 0;
+    uint32_t grad = (16u << 16) / (uint32_t)s;          /* gradient: (u + v) * 16 / s, in Q16 */
+    int x0 = xl < clip_x0 ? clip_x0 : xl, x1 = xr > clip_x1 ? clip_x1 : xr;
+    for (int x = x0; x < x1; x++) {
+        uint32_t t = ((uint32_t)((x - xl) * 2 + 1) << 15) / (uint32_t)w;            /* Q16 */
+        uint32_t hq = (65536 - t) * (uint32_t)hl + t * (uint32_t)hr;               /* Q16 */
+        int h = (int)((hq + 32768) >> 16);
+        if (h <= 0) continue;
+        uint32_t u = t * (uint32_t)hr / (uint32_t)h;                                /* Q16 */
+        int su = (int)((u * (uint32_t)s) >> 16);
+        if (su >= s) su = s - 1;
+        int top = cy - h / 2;
+        uint32_t vstep = ((uint32_t)s << 16) / (uint32_t)h;
+        int y0 = top < clip_y0 ? clip_y0 : top, y1 = top + h > clip_y1 ? clip_y1 : top + h;
+        uint32_t v = (uint32_t)(y0 - top) * vstep + vstep / 2;
+        uint16_t *d = fb + x;
+        for (int y = y0; y < y1; y++, v += vstep) {
+            int sv = (int)(v >> 16);
+            color_t c = px ? px[sv * s + su] : blend(c0, c1, (int)(((uint32_t)(su + sv) * grad) >> 16));
+            if (shade) c = blend(c, 0, shade);
+            int a = r ? cover(xl, top, w, h, r, x, y) * 2 : 32;
+            d[y * SCREEN_W] = a >= 32 ? c : blend(d[y * SCREEN_W], c, a);
+        }
+        /* the reflection: the cover upside down below it, fading out */
+        int rh = (h * refl) >> 8;
+        if (rh <= 0 || refl_a <= 0) continue;
+        int ry = top + h + 1;
+        uint32_t aq = (uint32_t)refl_a << 16, astep = aq / (uint32_t)rh;
+        v = vstep / 2;
+        for (int k = 0; k < rh; k++, v += vstep, aq -= astep) {
+            int y = ry + k, sv = s - 1 - (int)(v >> 16);
+            if (sv < 0 || y >= clip_y1) break;
+            if (y < clip_y0) continue;
+            color_t c = px ? px[sv * s + su] : blend(c0, c1, (int)(((uint32_t)(su + sv) * grad) >> 16));
+            if (shade) c = blend(c, 0, shade);
+            d[y * SCREEN_W] = blend(d[y * SCREEN_W], c, (int)(aq >> 16));
+        }
+    }
+}

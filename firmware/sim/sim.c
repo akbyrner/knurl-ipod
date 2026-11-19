@@ -5,7 +5,8 @@
  * writes screenshots. Also counts how many pixels each step uploads to the screen,
  * which is the main cost on the iPod.
  *
- *   knurl-sim [--disk IMAGE] [--wav FILE] OUTDIR token...
+ *   knurl-sim [--disk IMAGE] [--wav FILE] [--boot-shot NAME] OUTDIR token...
+ *     NAME: also write the boot screen as OUTDIR/NAME.ppm
  *     IMAGE: a raw disk with a FAT32 volume; FILE: everything the app queued for audio
  *     w+N / w-N            turn the wheel N detents
  *     sel menu play next prev
@@ -20,6 +21,7 @@
 #include "platform.h"
 #include "app.h"
 #include "engine.h"
+#include "splash.h"
 
 uint16_t fb[SCREEN_W * SCREEN_H];
 static uint32_t now = 1000;
@@ -36,8 +38,13 @@ int      platform_battery(void) { return 72; }
 int      platform_battery_mv(void) { return 3900; }
 int      platform_charging(void) { return 0; }
 int      platform_cpu_busy(void) { return 0; }
+/* settings.bin lives in memory: there, empty at the start of each run */
+static uint8_t settings_bin[512];
+int      platform_settings_load(void *buf) { memcpy(buf, settings_bin, 512); return 0; }
+int      platform_settings_save(const void *buf) { memcpy(settings_bin, buf, 512); return 0; }
+void     platform_set_power(uint32_t light_ms, uint32_t idle_ms) { (void)light_ms; (void)idle_ms; }
 
-void boot_log(const char *line) { fprintf(stderr, "boot: %s\n", line); }
+void boot_log(const char *line) { fprintf(stderr, "boot: %s\n", line); splash_log(line); }
 
 static int disk_fd = -1;
 static char disk_label[64] = "no disk image";
@@ -140,9 +147,12 @@ int main(int argc, char **argv)
         wav_header(wav, 0);
         argv += 2; argc -= 2;
     }
-    if (argc < 2) { fprintf(stderr, "usage: knurl-sim [--disk IMAGE] OUTDIR token...\n"); return 2; }
+    const char *boot_shot = 0;
+    if (argc > 2 && !strcmp(argv[1], "--boot-shot")) { boot_shot = argv[2]; argv += 2; argc -= 2; }
+    if (argc < 2) { fprintf(stderr, "usage: knurl-sim [--disk IMAGE] [--wav FILE] [--boot-shot NAME] OUTDIR token...\n"); return 2; }
     engine_init();
     app_init(now);
+    if (boot_shot) shot(argv[1], boot_shot);       /* the boot screen, before the first frame covers it */
     app_step(NULL, now);
     printf("%-22s %8s %8s %6s\n", "step", "presents", "pixels", "frames");
     printf("%-22s %8ld %8ld %6s\n", "(first frame)", presents, uploaded, "-");

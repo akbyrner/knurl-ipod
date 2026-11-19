@@ -17,6 +17,7 @@
 #include "fonts.h"
 #include "dev.h"
 #include "store.h"
+#include "splash.h"
 #include "storage/fat.h"
 
 int ata_init(void);
@@ -188,7 +189,7 @@ void platform_present(int x, int y, int w, int h)
  * is power-cycled at start. (Timings: Rockbox's backlight-nano_video.c.) */
 
 #define BRIGHTNESS      24        /* 1..32 */
-#define LIGHT_TIMEOUT_MS 20000    /* backlight and panel off after this long without input */
+static uint32_t light_timeout_ms = 20000;   /* backlight and panel off after this long without input (0 = never) */
 
 static int light;                 /* backlight on */
 
@@ -340,7 +341,9 @@ void platform_init(void)
 /* ---- power policy ----------------------------------------------------------------- */
 
 #define PLAY_HOLD_OFF_MS 2000           /* hold PLAY this long: off (like Apple's firmware) */
-#define IDLE_OFF_MS      (15u * 60 * 1000)   /* nothing playing and no input: off */
+static uint32_t idle_off_ms = 15u * 60 * 1000;   /* nothing playing and no input: off (0 = never); Settings */
+
+void platform_set_power(uint32_t light_ms, uint32_t idle_ms) { light_timeout_ms = light_ms; idle_off_ms = idle_ms; }
 
 static uint32_t last_input_ms, last_sound_ms, play_down_ms;
 
@@ -506,7 +509,7 @@ void platform_poll(input_t *in)
         wake();
         wheel_detents = 0;
         btn_pressed = 0;
-    } else if (light && now - last_input_ms >= LIGHT_TIMEOUT_MS) {
+    } else if (light && light_timeout_ms && now - last_input_ms >= light_timeout_ms) {
         go_dark();
     }
 
@@ -516,7 +519,7 @@ void platform_poll(input_t *in)
     } else {
         play_down_ms = 0;
     }
-    if (now - last_input_ms >= IDLE_OFF_MS && now - last_sound_ms >= IDLE_OFF_MS) shut_down(0, LOG_OFF_IDLE);
+    if (idle_off_ms && now - last_input_ms >= idle_off_ms && now - last_sound_ms >= idle_off_ms) shut_down(0, LOG_OFF_IDLE);
     if (power_low_battery()) shut_down("BATTERY LOW", LOG_OFF_BATTERY);
 
     in->wheel = wheel_detents;
@@ -569,23 +572,9 @@ void platform_exit(void)
 
 /* ---- boot log and crash screen ------------------------------------------------------ */
 
-static int boot_line = -1;
 
-void boot_log(const char *line)
-{
-    gfx_bounds(0, 0, SCREEN_W, SCREEN_H);
-    if (boot_line < 0) {
-        for (int i = 0; i < SCREEN_W * SCREEN_H; i++) fb[i] = RGB(0x18181B);
-        gfx_text(&font_mono, 14, 10, "KNURL  STARTING", RGB(0xB8B9BE), 0, 2);
-        platform_present(0, 0, SCREEN_W, SCREEN_H);
-        boot_line = 0;
-    }
-    int y = 30 + boot_line * 14;
-    if (y > SCREEN_H - 16) return;
-    gfx_text(&font_body, 14, y, line, RGB(0xECEBE6), 292, 0);
-    platform_present(0, y, SCREEN_W, 14);
-    boot_line++;
-}
+
+void boot_log(const char *line) { splash_log(line); }
 
 static char *hex32(char *p, uint32_t v)
 {

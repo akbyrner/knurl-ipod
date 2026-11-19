@@ -2,7 +2,7 @@
 #include "storage/fat.h"
 #include "mem.h"
 
-library_t lib = { 0, "not loaded", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+library_t lib = { 0, "not loaded", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
 #define MAX_INDEX (16u << 20)
 
@@ -73,6 +73,7 @@ int library_load(void)
     lib.n_tracks = h->n_tracks;
     lib.n_albums = h->n_albums;
     lib.n_artists = h->n_artists;
+    lib.built_unix = h->built_unix;
     lib.loaded = 1;
     lib.status = "loaded";
 
@@ -89,7 +90,7 @@ static const uint32_t art_bytes[KART_KINDS] = {
     KART_THUMB_S * KART_THUMB_S * 2, KART_TILE_S * KART_TILE_S * 2, KART_GRID_S * KART_GRID_S * 2,
     KART_COVER_S * KART_COVER_S * 2, KART_WASH_W * KART_WASH_H * 3,
 };
-static const int art_slots[KART_KINDS] = { 32, 16, 48, 2, 4 };
+static const int art_slots[KART_KINDS] = { 32, 16, 48, 24, 4 };   /* Flow shows up to 9 covers at once */
 
 typedef struct { uint8_t *data; int32_t *album; int next; } art_cache;
 static art_cache caches[KART_KINDS];
@@ -118,4 +119,12 @@ const void *lib_art(int album, int kind)
         return 0;
     c->album[slot] = album;
     return dst;
+}
+
+const void *lib_art_cached(int album, int kind)
+{
+    if (kind < 0 || kind >= KART_KINDS || !caches[kind].data) return 0;
+    for (int i = 0; i < art_slots[kind]; i++)
+        if (caches[kind].album[i] == album) return caches[kind].data + art_bytes[kind] * i;
+    return 0;
 }

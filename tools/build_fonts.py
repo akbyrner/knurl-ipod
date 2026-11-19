@@ -24,10 +24,13 @@ FACES = [
     ("font_letter", "inter.ttf",            16, {"wght": 750},              "letter tiles"),
     ("font_mono",   "plex_mono_medium.ttf",  9, {},                         "engraved caps labels"),
     ("font_mono_s", "plex_mono_medium.ttf",  8, {},                         "times, small labels"),
+    ("font_brand",  "archivo.ttf",          32, {"wght": 800, "wdth": 125}, "the KNURL word on the boot screen"),
 ]
 
 CHARSET = sorted(set(range(0x20, 0x7F)) | set(range(0xA0, 0x100)) |
                  {0x2018, 0x2019, 0x201C, 0x201D, 0x2013, 0x2014, 0x2022, 0x00B7, 0x2026, 0x2032, 0x2033})
+# Faces that only ever draw a few letters carry just those.
+FACE_CHARS = {"font_brand": sorted({ord(c) for c in "KNURL"})}   # sorted: glyphs are looked up by code point
 
 
 def load(file, size, axes):
@@ -69,7 +72,7 @@ def main(out_dir):
         font = load(file, size, axes)
         ascent, descent = font.getmetrics()
         glyphs, data = [], bytearray()
-        for cp in CHARSET:
+        for cp in FACE_CHARS.get(name, CHARSET):
             ch = chr(cp)
             if font.getmask(ch).getbbox() is None and ch != " " and cp != 0xA0:
                 continue  # not in this font

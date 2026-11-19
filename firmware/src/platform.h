@@ -70,3 +70,11 @@ int      platform_battery(void);
 int      platform_battery_mv(void);       /* smoothed battery voltage, -1 if unknown */
 int      platform_charging(void);         /* the charger is charging the battery */
 int      platform_cpu_busy(void);         /* % of the last second the CPU was awake */
+/* Settings: one 512-byte record (buf 4-aligned) in /.knurl/settings.bin, a file PodManager creates
+ * zero-filled. load: 0 = the file is there (buf has its contents, all zeros the first time);
+ * -1 = no file, so nothing can be saved. save: 0 = written. */
+int      platform_settings_load(void *buf);
+int      platform_settings_save(const void *buf);
+/* Backlight off after light_ms without input; off altogether after idle_ms with nothing playing
+ * and no input. 0 = never. */
+void     platform_set_power(uint32_t light_ms, uint32_t idle_ms);

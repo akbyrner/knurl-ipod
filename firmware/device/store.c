@@ -56,3 +56,21 @@ int store_read(fat_file *f, uint32_t pos, void *buf, uint32_t n)
 {
     return span(f, pos, n, 0, buf);
 }
+
+/* ---- settings: /.knurl/settings.bin, one sector (app.c decides what's in it) ---------------- */
+static fat_file settings_file;
+static int settings_open;
+
+int platform_settings_load(void *buf)
+{
+    settings_open = 0;
+    if (store_open("/.knurl/settings.bin", &settings_file, 512) || store_read(&settings_file, 0, buf, 512)) return -1;
+    settings_open = 1;
+    return 0;
+}
+
+int platform_settings_save(const void *buf)
+{
+    if (!settings_open) return -1;
+    return store_write(&settings_file, 0, buf, 512) || ata_flush() ? -1 : 0;
+}

@@ -17,6 +17,7 @@ typedef struct {
     const char *strings;
     uint32_t strings_size;
     int have_art;
+    uint32_t built_unix;           /* when PodManager wrote the index */
 } library_t;
 
 extern library_t lib;
@@ -28,3 +29,5 @@ const char *lib_str(uint32_t off);        /* never NULL */
  * Returns NULL if the album has no art or it can't be read. The pointer stays valid until
  * the same cache slot is reused, i.e. long enough to draw one frame. */
 const void *lib_art(int album, int kind);
+/* The same, but only if it's already in memory (no disk read): for drawing while moving fast. */
+const void *lib_art_cached(int album, int kind);

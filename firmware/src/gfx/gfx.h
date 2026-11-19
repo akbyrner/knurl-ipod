@@ -34,6 +34,13 @@ void    gfx_pixels(int x, int y, int w, int h, const uint16_t *px, int r);
 /* Opaque rounded rectangle filled with a diagonal gradient from c0 (top-left) to c1. */
 void    gfx_rrect_gradient(int x, int y, int w, int h, int r, color_t c0, color_t c1);
 
+/* A Flow cover: a square image (s x s, or a c0 -> c1 gradient if px is NULL) turned about its
+ * vertical axis, so its left edge is hl tall at x = xl and its right edge hr tall at x = xr, both
+ * centred on cy. shade darkens it (0..32); r rounds its corners when it faces you (hl == hr).
+ * Below it a reflection refl/256 of its height fades from alpha refl_a to nothing. */
+void    gfx_cover(const uint16_t *px, int s, color_t c0, color_t c1, int xl, int xr, int cy, int hl, int hr,
+                  int shade, int r, int refl, int refl_a);
+
 /* Text. y is the top of the line box. track adds pixels between letters. If maxw > 0 the
  * text is cut with an ellipsis to fit. Returns the drawn width. */
 int     gfx_text(const font_t *f, int x, int y, const char *utf8, color_t c, int maxw, int track);

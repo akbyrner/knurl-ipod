@@ -9,15 +9,18 @@ repository. Knurl is installed alongside Apple's firmware, with its own boot loa
 on the iPod.
 
 <p>
+  <img src="docs/images/00-boot.png" width="32%" alt="Boot screen">
   <img src="docs/images/01-home.png" width="32%" alt="Home">
-  <img src="docs/images/02-albums.png" width="32%" alt="Albums">
-  <img src="docs/images/04-album.png" width="32%" alt="Album">
-  <img src="docs/images/05-now-playing.png" width="32%" alt="Now Playing">
-  <img src="docs/images/06-volume.png" width="32%" alt="Volume">
-  <img src="docs/images/07-scrubbing.png" width="32%" alt="Scrubbing">
-  <img src="docs/images/11-artists.png" width="32%" alt="Artists">
-  <img src="docs/images/13-songs.png" width="32%" alt="Songs">
-  <img src="docs/images/15-recent.png" width="32%" alt="Recently Added">
+  <img src="docs/images/02-albums-flow.png" width="32%" alt="Albums in Flow">
+  <img src="docs/images/04-albums-grid.png" width="32%" alt="Albums as a grid">
+  <img src="docs/images/05-album.png" width="32%" alt="Album">
+  <img src="docs/images/06-now-playing.png" width="32%" alt="Now Playing">
+  <img src="docs/images/07-volume.png" width="32%" alt="Volume">
+  <img src="docs/images/08-scrubbing.png" width="32%" alt="Scrubbing">
+  <img src="docs/images/13-artists-flow.png" width="32%" alt="Artists in Flow">
+  <img src="docs/images/16-songs-flow.png" width="32%" alt="Songs in Flow">
+  <img src="docs/images/19-settings.png" width="32%" alt="Settings">
+  <img src="docs/images/21-about.png" width="32%" alt="About">
 </p>
 
 These screenshots come from the simulator running the real app code against a demo disk image
@@ -27,16 +30,25 @@ These screenshots come from the simulator running the real app code against a de
 
 - **Library**:
   - Home has a Pinned shelf: Liked Songs, last played album, Recently Added, Shuffle All.
-  - Albums grid, album page, Artists, artist page, Songs, Recently Added.
-  - Covers, plus a blurred "wash" of the playing cover behind everything.
+  - Albums, Artists, an artist's page, Songs and Recently Added all open in **Flow**: the focused cover
+    face-on, the others turned away to each side with reflections, and a dial of ticks showing where you
+    are. **Play/Pause** switches a view between Flow and its list (or the albums grid), and the iPod
+    remembers the choice for each view until it restarts.
+  - Album page, covers, plus a blurred "wash" of the playing cover behind everything.
+- **Settings**, kept on the iPod in `/.knurl/settings.bin`:
+  - Playback: Shuffle (when you play an album or the song list), Repeat (off, all, one), and the
+    starting volume.
+  - Power: backlight timeout (10 s to always on) and auto-off (5 minutes to never).
+  - About: library size, when it was indexed, the disk, and the battery.
+- **Boot screen**: Knurl's mark and name, with the start-up log underneath.
 - **Playback**: gapless MP3 (MPEG-1 Layer III) from a fixed-point decoder running on the second ARM core.
   - Now Playing has a 21-notch scrub bar.
   - The wheel sets the volume (16 steps); Select switches the wheel to scrubbing.
 - **Power**:
-  - Backlight off after 20 s.
+  - Backlight off after 20 s (adjustable in Settings).
   - The CPU sleeps between events.
   - Battery gauge and charging indicator.
-  - Off after holding PLAY for 2 s, after 15 min idle, or when the battery is flat.
+  - Off after holding PLAY for 2 s, after 15 min idle (adjustable), or when the battery is flat.
 - **Disk mode inside Knurl**: plug in with HOLD on and the iPod is a USB 2.0 high-speed drive. Reads
   run at about 14 MB/s and writes at about 6.5 MB/s.
 - **HOLD** locks the buttons.
@@ -80,8 +92,9 @@ appended to Apple's firmware. The boot ROM loads that image into SDRAM and start
 - A refusal or an install is reported in `/.knurl/install.log`. Every boot shows which loader ran.
 
 Knurl never writes the FAT. The PC creates the files Knurl writes into, zero-filled at full size, and Knurl
-overwrites their sectors in place (`device/store.c`). These files are `battery.log` (created by PodManager)
-and `install.log`.
+overwrites their sectors in place (`device/store.c`). These files are `battery.log` and `settings.bin` (both
+created by PodManager) and `install.log`. Without `settings.bin` the settings still work, but are lost at the
+next restart.
 
 File format (`tools/mkipod.py`): big-endian checksum, `ipvd`, image. Checksum = 5 + the sum of the image bytes.
 
@@ -120,13 +133,13 @@ Until then the gauge uses a stock-battery curve.
 ## Layout
 
 ```
-firmware/src/      shared app code: app.c (screens, behaviour), gfx/ (drawing, text, glass), library/,
+firmware/src/      shared app code: app.c (screens, behaviour), splash.c (boot screen), gfx/ (drawing, text, glass), library/,
                    storage/ (read-only FAT32), mp3/ (decoder), player.c, engine.c
 firmware/device/   iPod only: crt0.S, hw.h, device.c (screen, click wheel, main loop), ata.c, audio.c,
                    cop.c, power.c, usb.c (disk mode), store.c, fwinstall.c, i2c.c, libc.c
 firmware/boot/     the boot loader (start.S, boot.c, link.ld)
 firmware/sim/      Linux simulator running the same app code (scripted wheel, screenshots, --wav)
-tools/             build-time renderers (fonts, icons, light, plane), mkipod.py, shots.py,
+tools/             build-time renderers (fonts, icons, light, logo), mkipod.py, shots.py,
                    make_test_image.py, mp3check*.sh, seek_test.c, battery_fit.py
 toolchain/         the Docker build image
 archive/milestone0 the first test firmware
@@ -181,6 +194,12 @@ docs/images/       simulator screenshots
    - Battery logging and in-place file writes (`store.c`) arrived with it.
    - Lesson: an experimental disk speed test run at boot left the disk unreadable until the next restart.
      The boot path now does only what it must; nothing experimental runs there.
+6. **Flow and Settings**: every music view opens in Flow, Settings (playback, power, About) are kept in
+   `settings.bin`, and a new boot screen.
+   - Flow covers are drawn column by column (`gfx_cover`): each screen column is one source column,
+     stretched to that column's height, perspective-correct across. No 3D hardware is involved.
+   - While the carousel moves fast, covers that aren't in memory are drawn from the small grid image,
+     and the 140 px covers are read once it slows down, so spinning the wheel never waits on the disk.
 
 ## Credits and licences
 

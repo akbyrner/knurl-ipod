@@ -13,10 +13,10 @@ DEV_CFLAGS = -mcpu=arm7tdmi -marm -O2 $(WARN) -ffreestanding -fno-builtin -nostd
 DEV_LDFLAGS = -T link.ld -nostartfiles -nostdlib -Wl,--gc-sections -Wl,-Map=build/knurl.map
 SIM_CFLAGS = -O1 -g $(WARN) $(INC) -Isim
 
-HDRS  = $(wildcard src/*.h src/*/*.h src/*/*.inc device/*.h) $(GEN)/fonts.h $(GEN)/icons.h $(GEN)/light.h
+HDRS  = $(wildcard src/*.h src/*/*.h src/*/*.inc device/*.h) $(GEN)/fonts.h $(GEN)/icons.h $(GEN)/light.h $(GEN)/logo.h
 FONTS = $(wildcard ../assets/fonts/*.ttf)
 
-COMMON = app engine player mp3dec mp3info pow43 gfx plane fonts icons light fat library mem
+COMMON = app splash engine player mp3dec mp3info pow43 gfx plane fonts icons light logo fat library mem
 DEV_OBJS = $(addprefix build/dev/,crt0.o device.o ata.o audio.o i2c.o power.o usb.o store.o fwinstall.o cop.o libc.o synth_arm.o $(addsuffix .o,$(COMMON)))
 BOOT_OBJS = $(addprefix build/boot/,start.o boot.o ata.o fat.o libc.o)
 SIM_OBJS = $(addprefix build/sim/,sim.o $(addsuffix .o,$(COMMON)))
@@ -26,11 +26,13 @@ vpath %.S src src/mp3 device boot
 
 # A raw disk image with a FAT32 volume holding a library (tools/make_test_image.py).
 DISK ?= ../testdata/demo.img
-SHOT_SCRIPT = shot:01-home sel shot:02-albums w+5 shot:03-albums-scrolled sel shot:04-album \
-              w+2 sel t+3000 shot:05-now-playing w+3 shot:06-volume t+2000 sel shot:07-scrubbing w+4 \
-              shot:08-scrub-target t+400 shot:09-after-seek menu menu shot:10-album-mini menu menu \
-              w+1 sel shot:11-artists w+2 sel shot:12-artist menu menu w+1 sel shot:13-songs w+20 \
-              shot:14-songs-scrolled menu w-5 sel shot:15-recent menu w+40 shot:16-home-now-row
+SHOT_SCRIPT = shot:01-home sel shot:02-albums-flow w+5 shot:03-albums-flow-turned play shot:04-albums-grid play \
+              sel shot:05-album w+2 sel t+3000 shot:06-now-playing w+3 shot:07-volume t+2000 sel shot:08-scrubbing \
+              w+4 shot:09-scrub-target t+400 shot:10-after-seek menu menu shot:11-album-mini menu \
+              shot:12-albums-flow-mini menu w+1 sel shot:13-artists-flow play shot:14-artists-list play \
+              w+2 sel shot:15-artist-flow menu menu w+1 sel shot:16-songs-flow w+20 shot:17-songs-flow-turned \
+              menu w-4 sel shot:18-recent-flow menu w+7 sel shot:19-settings w+2 sel w+3 shot:20-settings-editing \
+              sel w+3 sel shot:21-about menu menu w+1 shot:22-home-now-row
 
 all: build/knurl.ipod build/knurlboot.ipod
 
@@ -45,6 +47,9 @@ $(GEN)/icons.c $(GEN)/icons.h &: ../tools/build_icons.py | $(GEN)
 
 $(GEN)/light.c $(GEN)/light.h &: ../tools/build_light.py | $(GEN)
 	python3 ../tools/build_light.py $(GEN)
+
+$(GEN)/logo.c $(GEN)/logo.h &: ../tools/build_logo.py | $(GEN)
+	python3 ../tools/build_logo.py $(GEN)
 
 $(GEN)/pow43.c: ../tools/build_pow43.py | $(GEN)
 	python3 ../tools/build_pow43.py $(GEN)
@@ -87,7 +92,7 @@ sim: build/knurl-sim
 
 shots: build/knurl-sim | build/shots
 	rm -f build/shots/*
-	build/knurl-sim --disk $(DISK) build/shots $(SHOT_SCRIPT)
+	build/knurl-sim --disk $(DISK) --boot-shot 00-boot build/shots $(SHOT_SCRIPT)
 	build/knurl-sim build/shots shot:00-no-disk
 	python3 ../tools/shots.py build/shots
 
